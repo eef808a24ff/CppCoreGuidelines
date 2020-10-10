@@ -1982,7 +1982,7 @@ This `draw2()` passes the same amount of information to `draw()`, but makes the 
 ##### Exception
 
 Use `zstring` and `czstring` to represent C-style, zero-terminated strings.
-But when doing so, use `std::string_view` or `string_span` from the [GSL](#S-gsl) to prevent range errors.
+But when doing so, use `std::string_view` or `span<char>` from the [GSL](#S-gsl) to prevent range errors.
 
 ##### Enforcement
 
@@ -2735,8 +2735,12 @@ See also [C.44](#Rc-default00).
 
 ##### Reason
 
-Passing a smart pointer transfers or shares ownership and should only be used when ownership semantics are intended (see [R.30](#Rr-smartptrparam)).
+Passing a smart pointer transfers or shares ownership and should only be used when ownership semantics are intended.
+A function that does not manipulate lifetime should take raw pointers or references instead.
+
 Passing by smart pointer restricts the use of a function to callers that use smart pointers.
+A function that needs a `widget` should be able to accept any `widget` object, not just ones whose lifetimes are managed by a particular kind of smart pointer.
+
 Passing a shared smart pointer (e.g., `std::shared_ptr`) implies a run-time cost.
 
 ##### Example
@@ -2766,24 +2770,45 @@ Passing a shared smart pointer (e.g., `std::shared_ptr`) implies a run-time cost
         // ...
     };
 
-See further in [R.30](#Rr-smartptrparam).
+    // caller
+    shared_ptr<widget> my_widget = /* ... */;
+    f(my_widget);
+
+    widget stack_widget;
+    f(stack_widget); // error
+
+##### Example, good
+
+    // callee
+    void f(widget& w)
+    {
+        // ...
+        use(w);
+        // ...
+    };
+
+    // caller
+    shared_ptr<widget> my_widget = /* ... */;
+    f(*my_widget);
+
+    widget stack_widget;
+    f(stack_widget); // ok -- now this works
 
 ##### Note
 
 We can catch dangling pointers statically, so we don't need to rely on resource management to avoid violations from dangling pointers.
 
-**See also**:
-
-* [Prefer `T*` over `T&` when "no argument" is a valid option](#Rf-ptr-ref)
-* [Smart pointer rule summary](#Rr-summary-smartptrs)
-
 ##### Enforcement
 
-Flag a parameter of a smart pointer type (a type that overloads `operator->` or `operator*`) for which the ownership semantics are not used;
-that is
+* (Simple) Warn if a function takes a parameter of a smart pointer type (that overloads `operator->` or `operator*`) that is copyable but the function only calls any of: `operator*`, `operator->` or `get()`.
+  Suggest using a `T*` or `T&` instead.
+* Flag a parameter of a smart pointer type (a type that overloads `operator->` or `operator*`) that is copyable/movable but never copied/moved from in the function body, and that is never modified, and that is not passed along to another function that could do so. That means the ownership semantics are not used.
+  Suggest using a `T*` or `T&` instead.
 
-* copyable but never copied/moved from or movable but never moved
-* and that is never modified or passed along to another function that could do so.
+**see also**:
+
+* [prefer `t*` over `t&` when "no argument" is a valid option](#rf-ptr-ref)
+* [smart pointer rule summary](#rr-summary-smartptrs)
 
 ### <a name="Rf-pure"></a>F.8: Prefer pure functions
 
@@ -5620,7 +5645,7 @@ An initialization explicitly states that initialization, rather than assignment,
 
 ##### Example, better still
 
-Instead of those `const char*`s we could use `gsl::string_span` or (in C++17) `std::string_view`
+Instead of those `const char*`s we could use C++17 `std::string_view` or `gsl::span<char>`
 as [a more general way to present arguments to a function](#Rstr-view):
 
     class D {   // Good
@@ -7984,56 +8009,11 @@ Avoid resource leaks.
 
 ### <a name="Rh-make_unique"></a>C.150: Use `make_unique()` to construct objects owned by `unique_ptr`s
 
-##### Reason
-
-`make_unique` gives a more concise statement of the construction.
-It also ensures exception safety in complex expressions.
-
-##### Example
-
-    unique_ptr<Foo> p {new Foo{7}};    // OK: but repetitive
-
-    auto q = make_unique<Foo>(7);      // Better: no repetition of Foo
-
-    // Not exception-safe: the compiler might interleave the computations of arguments as follows:
-    //
-    // 1. allocate memory for Foo,
-    // 2. construct Foo,
-    // 3. call bar,
-    // 4. construct unique_ptr<Foo>.
-    //
-    // If bar throws, Foo will not be destroyed, and the memory-allocated for it will leak.
-    f(unique_ptr<Foo>(new Foo()), bar());
-
-    // Exception-safe: calls to functions are never interleaved.
-    f(make_unique<Foo>(), bar());
-
-##### Enforcement
-
-* Flag the repetitive usage of template specialization list `<Foo>`
-* Flag variables declared to be `unique_ptr<Foo>`
+See [R.23](#Rr-make_unique)
 
 ### <a name="Rh-make_shared"></a>C.151: Use `make_shared()` to construct objects owned by `shared_ptr`s
 
-##### Reason
-
-`make_shared` gives a more concise statement of the construction.
-It also gives an opportunity to eliminate a separate allocation for the reference counts, by placing the `shared_ptr`'s use counts next to its object.
-
-##### Example
-
-    void test()
-    {
-        // OK: but repetitive; and separate allocations for the Bar and shared_ptr's use count
-        shared_ptr<Bar> p {new Bar{7}};
-
-        auto q = make_shared<Bar>(7);   // Better: no repetition of Bar; one object
-    }
-
-##### Enforcement
-
-* Flag the repetitive usage of template specialization list`<Bar>`
-* Flag variables declared to be `shared_ptr<Bar>`
+See [R.22](#Rr-make_shared)
 
 ### <a name="Rh-array"></a>C.152: Never assign a pointer to an array of derived class objects to a pointer to its base
 
@@ -9051,7 +9031,7 @@ Whenever you deal with a resource that needs paired acquire/release function cal
 
 Consider:
 
-    void send(X* x, cstring_span destination)
+    void send(X* x, string_view destination)
     {
         auto port = open_port(destination);
         my_mutex.lock();
@@ -9070,7 +9050,7 @@ Further, if any of the code marked `...` throws an exception, then `x` is leaked
 
 Consider:
 
-    void send(unique_ptr<X> x, cstring_span destination)  // x owns the X
+    void send(unique_ptr<X> x, string_view destination)  // x owns the X
     {
         Port port{destination};            // port owns the PortHandle
         lock_guard<mutex> guard{my_mutex}; // guard owns the lock
@@ -9086,7 +9066,7 @@ What is `Port`? A handy wrapper that encapsulates the resource:
     class Port {
         PortHandle port;
     public:
-        Port(cstring_span destination) : port{open_port(destination)} { }
+        Port(string_view destination) : port{open_port(destination)} { }
         ~Port() { close_port(port); }
         operator PortHandle() { return port; }
 
@@ -9548,7 +9528,8 @@ This is more efficient:
 
 ##### Reason
 
-If you first make an object and then give it to a `shared_ptr` constructor, you (most likely) do one more allocation (and later deallocation) than if you use `make_shared()` because the reference counts must be allocated separately from the object.
+`make_shared` gives a more concise statement of the construction.
+It also gives an opportunity to eliminate a separate allocation for the reference counts, by placing the `shared_ptr`'s use counts next to its object.
 
 ##### Example
 
@@ -9567,11 +9548,14 @@ The `make_shared()` version mentions `X` only once, so it is usually shorter (as
 
 ##### Reason
 
-For convenience and consistency with `shared_ptr`.
+`make_unique` gives a more concise statement of the construction.
+It also ensures exception safety in complex expressions.
 
-##### Note
+##### Example
 
-`make_unique()` is C++14, but widely available (as well as simple to write).
+    unique_ptr<Foo> p {new Foo{7}};    // OK: but repetitive
+
+    auto q = make_unique<Foo>(7);      // Better: no repetition of Foo
 
 ##### Enforcement
 
@@ -9626,52 +9610,7 @@ You could "temporarily share ownership" simply by using another `shared_ptr`.)
 
 ### <a name="Rr-smartptrparam"></a>R.30: Take smart pointers as parameters only to explicitly express lifetime semantics
 
-##### Reason
-
-Accepting a smart pointer to a `widget` is wrong if the function just needs the `widget` itself.
-It should be able to accept any `widget` object, not just ones whose lifetimes are managed by a particular kind of smart pointer.
-A function that does not manipulate lifetime should take raw pointers or references instead.
-
-##### Example, bad
-
-    // callee
-    void f(shared_ptr<widget>& w)
-    {
-        // ...
-        use(*w); // only use of w -- the lifetime is not used at all
-        // ...
-    };
-
-    // caller
-    shared_ptr<widget> my_widget = /* ... */;
-    f(my_widget);
-
-    widget stack_widget;
-    f(stack_widget); // error
-
-##### Example, good
-
-    // callee
-    void f(widget& w)
-    {
-        // ...
-        use(w);
-        // ...
-    };
-
-    // caller
-    shared_ptr<widget> my_widget = /* ... */;
-    f(*my_widget);
-
-    widget stack_widget;
-    f(stack_widget); // ok -- now this works
-
-##### Enforcement
-
-* (Simple) Warn if a function takes a parameter of a smart pointer type (that overloads `operator->` or `operator*`) that is copyable but the function only calls any of: `operator*`, `operator->` or `get()`.
-  Suggest using a `T*` or `T&` instead.
-* Flag a parameter of a smart pointer type (a type that overloads `operator->` or `operator*`) that is copyable/movable but never copied/moved from in the function body, and that is never modified, and that is not passed along to another function that could do so. That means the ownership semantics are not used.
-  Suggest using a `T*` or `T&` instead.
+See [F.7](#Rf-smart).
 
 ### <a name="Rr-smart"></a>R.31: If you have non-`std` smart pointers, follow the basic pattern from `std`
 
@@ -9957,7 +9896,7 @@ Arithmetic rules:
 * [ES.102: Use signed types for arithmetic](#Res-signed)
 * [ES.103: Don't overflow](#Res-overflow)
 * [ES.104: Don't underflow](#Res-underflow)
-* [ES.105: Don't divide by zero](#Res-zero)
+* [ES.105: Don't divide by integer zero](#Res-zero)
 * [ES.106: Don't try to avoid negative values by using `unsigned`](#Res-nonnegative)
 * [ES.107: Don't use `unsigned` for subscripts, prefer `gsl::index`](#Res-subscripts)
 
@@ -11679,35 +11618,35 @@ In fact, they often disable the general rules for using values.
 Overload resolution and template instantiation usually pick the right function if there is a right function to pick.
 If there is not, maybe there ought to be, rather than applying a local fix (cast).
 
-##### Note
+##### Notes
 
 Casts are necessary in a systems programming language.  For example, how else
 would we get the address of a device register into a pointer?  However, casts
 are seriously overused as well as a major source of errors.
 
-##### Note
-
 If you feel the need for a lot of casts, there might be a fundamental design problem.
 
-##### Exception
+The [type profile](#Pro-type-reinterpretcast) bans `reinterpret_cast` and C-style casts.
 
-Casting to `(void)` is the Standard-sanctioned way to turn off `[[nodiscard]]` warnings. If you are calling a function with a `[[nodiscard]]` return and you deliberately want to discard the result, first think hard about whether that is really a good idea (there is usually a good reason the author of the function or of the return type used `[[nodiscard]]` in the first place), but if you still think it's appropriate and your code reviewer agrees, write `(void)` to turn off the warning.
+Never cast to `(void)` to ignore a `[[nodiscard]]`return value.
+If you deliberately want to discard such a result, first think hard about whether that is really a good idea (there is usually a good reason the author of the function or of the return type used `[[nodiscard]]` in the first place).
+If you still think it's appropriate and your code reviewer agrees, use `std::ignore =` to turn off the warning which is simple, portable, and easy to grep.
 
 ##### Alternatives
 
-Casts are widely (mis) used. Modern C++ has rules and constructs that eliminate the need for casts in many contexts, such as
+Casts are widely (mis)used. Modern C++ has rules and constructs that eliminate the need for casts in many contexts, such as
 
 * Use templates
 * Use `std::variant`
 * Rely on the well-defined, safe, implicit conversions between pointer types
+* Use `std::ignore =" to ignore `[[nodiscard]]` values.
 
 ##### Enforcement
 
-* Force the elimination of C-style casts, except when casting a `[[nodiscard]]` function return value to `void`.
-* Warn if there are many functional style casts (there is an obvious problem in quantifying 'many').
-* The [type profile](#Pro-type-reinterpretcast) bans `reinterpret_cast`.
-* Warn against [identity casts](#Pro-type-identitycast) between pointer types, where the source and target types are the same (#Pro-type-identitycast).
-* Warn if a pointer cast could be [implicit](#Pro-type-implicitpointercast).
+* Flag all C-style casts, including to `void`.
+* Flag functional style casts using `Type(value)`. Use `Type{value}` instead which is not narrowing. (See [ES.64](#Res-construct).)
+* Flag [identity casts](#Pro-type-identitycast) between pointer types, where the source and target types are the same (#Pro-type-identitycast).
+* Flag an explicit pointer cast that could be [implicit](#Pro-type-implicitpointercast).
 
 ### <a name="Res-casts-named"></a>ES.49: If you must use a cast, use a named cast
 
@@ -11767,7 +11706,8 @@ for example.)
 
 ##### Enforcement
 
-* Flag C-style and functional casts.
+* Flag all C-style casts, including to `void`.
+* Flag functional style casts using `Type(value)`. Use `Type{value}` instead which is not narrowing. (See [ES.64](#Res-construct).)
 * The [type profile](#Pro-type-reinterpretcast) bans `reinterpret_cast`.
 * The [type profile](#Pro-type-arithmeticcast) warns when using `static_cast` between arithmetic types.
 
@@ -11842,7 +11782,7 @@ Instead, prefer to put the common code in a common helper function -- and make i
         Bar my_bar;
 
         template<class T>           // good, deduces whether T is const or non-const
-        static auto get_bar_impl(T& t) -> decltype(t.get_bar())
+        static auto& get_bar_impl(T& t)
             { /* the complex logic around getting a possibly-const reference to my_bar */ }
     };
 
@@ -13249,7 +13189,7 @@ Use unsigned types if you really want modulo arithmetic.
 
 ???
 
-### <a name="Res-zero"></a>ES.105: Don't divide by zero
+### <a name="Res-zero"></a>ES.105: Don't divide by integer zero
 
 ##### Reason
 
@@ -13261,7 +13201,7 @@ This also applies to `%`.
 
 ##### Example, bad
 
-    double divide(int a, int b)
+    int divide(int a, int b)
     {
         // BAD, should be checked (e.g., in a precondition)
         return a / b;
@@ -13269,17 +13209,17 @@ This also applies to `%`.
 
 ##### Example, good
 
-    double divide(int a, int b)
+    int divide(int a, int b)
     {
         // good, address via precondition (and replace with contracts once C++ gets them)
         Expects(b != 0);
         return a / b;
     }
 
-    double divide(int a, int b)
+    double divide(double a, double b)
     {
-        // good, address via check
-        return b ? a / b : quiet_NaN<double>();
+        // good, address via using double instead
+        return a / b;
     }
 
 **Alternative**: For critical applications that can afford some overhead, use a range-checked integer and/or floating-point type.
@@ -19653,7 +19593,7 @@ Instead, define proper default initialization, copy, and comparison functions
 
 Text manipulation is a huge topic.
 `std::string` doesn't cover all of it.
-This section primarily tries to clarify `std::string`'s relation to `char*`, `zstring`, `string_view`, and `gsl::string_span`.
+This section primarily tries to clarify `std::string`'s relation to `char*`, `zstring`, `string_view`, and `gsl::span<char>`.
 The important issue of non-ASCII character sets and encodings (e.g., `wchar_t`, Unicode, and UTF-8) will be covered elsewhere.
 
 **See also**: [regular expressions](#SS-regex)
@@ -19664,13 +19604,13 @@ We don't consider ???
 String summary:
 
 * [SL.str.1: Use `std::string` to own character sequences](#Rstr-string)
-* [SL.str.2: Use `std::string_view` or `gsl::string_span` to refer to character sequences](#Rstr-view)
+* [SL.str.2: Use `std::string_view` or `gsl::span<char>` to refer to character sequences](#Rstr-view)
 * [SL.str.3: Use `zstring` or `czstring` to refer to a C-style, zero-terminated, sequence of characters](#Rstr-zstring)
 * [SL.str.4: Use `char*` to refer to a single character](#Rstr-char*)
 * [SL.str.5: Use `std::byte` to refer to byte values that do not necessarily represent characters](#Rstr-byte)
 
 * [SL.str.10: Use `std::string` when you need to perform locale-sensitive string operations](#Rstr-locale)
-* [SL.str.11: Use `gsl::string_span` rather than `std::string_view` when you need to mutate a string](#Rstr-span)
+* [SL.str.11: Use `gsl::span<char>` rather than `std::string_view` when you need to mutate a string](#Rstr-span)
 * [SL.str.12: Use the `s` suffix for string literals meant to be standard-library `string`s](#Rstr-s)
 
 **See also**:
@@ -19708,16 +19648,6 @@ In C++17, we might use `string_view` as the argument, rather than `const string&
         return res;
     }
 
-The `gsl::string_span` is a current alternative offering most of the benefits of `std::string_view` for simple examples:
-
-    vector<string> read_until(string_span terminator)
-    {
-        vector<string> res;
-        for (string s; cin >> s && s != terminator; ) // read a word
-            res.push_back(s);
-        return res;
-    }
-
 ##### Example, bad
 
 Don't use C-style strings for operations that require non-trivial memory management
@@ -19748,18 +19678,18 @@ Do not assume that `string` is slower than lower-level techniques without measur
 
 ???
 
-### <a name="Rstr-view"></a>SL.str.2: Use `std::string_view` or `gsl::string_span` to refer to character sequences
+### <a name="Rstr-view"></a>SL.str.2: Use `std::string_view` or `gsl::span<char>` to refer to character sequences
 
 ##### Reason
 
-`std::string_view` or `gsl::string_span` provides simple and (potentially) safe access to character sequences independently of how
+`std::string_view` or `gsl::span<char>` provides simple and (potentially) safe access to character sequences independently of how
 those sequences are allocated and stored.
 
 ##### Example
 
-    vector<string> read_until(string_span terminator);
+    vector<string> read_until(string_view terminator);
 
-    void user(zstring p, const string& s, string_span ss)
+    void user(zstring p, const string& s, string_view ss)
     {
         auto v1 = read_until(p);
         auto v2 = read_until(s);
@@ -19839,7 +19769,7 @@ The array `arr` is not a C-style string because it is not zero-terminated.
 
 ##### Alternative
 
-See [`zstring`](#Rstr-zstring), [`string`](#Rstr-string), and [`string_span`](#Rstr-view).
+See [`zstring`](#Rstr-zstring), [`string`](#Rstr-string), and [`string_view`](#Rstr-view).
 
 ##### Enforcement
 
@@ -19883,7 +19813,7 @@ C++17
 
 ???
 
-### <a name="Rstr-span"></a>SL.str.11: Use `gsl::string_span` rather than `std::string_view` when you need to mutate a string
+### <a name="Rstr-span"></a>SL.str.11: Use `gsl::span<char>` rather than `std::string_view` when you need to mutate a string
 
 ##### Reason
 
@@ -20774,7 +20704,7 @@ Type safety profile summary:
 * <a name="Pro-type-constcast"></a>Type.3: Don't use `const_cast` to cast away `const` (i.e., at all):
 [Don't cast away const](#Res-casts-const).
 * <a name="Pro-type-cstylecast"></a>Type.4: Don't use C-style `(T)expression` or functional `T(expression)` casts:
-Prefer [construction](#Res-construct) or [named casts](#Res-casts-named).
+Prefer [construction](#Res-construct) or [named casts](#Res-casts-named) or `T{expression}`.
 * <a name="Pro-type-init"></a>Type.5: Don't use a variable before it has been initialized:
 [always initialize](#Res-always).
 * <a name="Pro-type-memberinit"></a>Type.6: Always initialize a member variable:
@@ -20914,8 +20844,6 @@ If something is not supposed to be `nullptr`, say so:
 
 * `span<T>`       // `[p:p+n)`, constructor from `{p, q}` and `{p, n}`; `T` is the pointer type
 * `span_p<T>`     // `{p, predicate}` `[p:q)` where `q` is the first element for which `predicate(*p)` is true
-* `string_span`   // `span<char>`
-* `cstring_span`  // `span<const char>`
 
 A `span<T>` refers to zero or more mutable `T`s unless `T` is a `const` type.
 
@@ -21711,9 +21639,9 @@ Because we want to use them immediately, and because they are temporary in that 
 
 No. The GSL exists only to supply a few types and aliases that are not currently in the standard library. If the committee decides on standardized versions (of these or other types that fill the same need) then they can be removed from the GSL.
 
-### <a name="Faq-gsl-string-view"></a>FAQ.55: If you're using the standard types where available, why is the GSL `string_span` different from the `string_view` in the Library Fundamentals 1 Technical Specification and C++17 Working Paper? Why not just use the committee-approved `string_view`?
+### <a name="Faq-gsl-string-view"></a>FAQ.55: If you're using the standard types where available, why is the GSL `span<char>` different from the `string_view` in the Library Fundamentals 1 Technical Specification and C++17 Working Paper? Why not just use the committee-approved `string_view`?
 
-The consensus on the taxonomy of views for the C++ Standard Library was that "view" means "read-only", and "span" means "read/write". The read-only `string_view` was the first such component to complete the standardization process, while `span` and `string_span` are currently being considered for standardization.
+The consensus on the taxonomy of views for the C++ Standard Library was that "view" means "read-only", and "span" means "read/write". If you only need a read-only view of characters that does not need guaranteed bounds-checking and you have C++17, use C++17 `std::string_view`. Otherwise, if you need a read-write view that does not need guaranteed bounds-checking and you have C++20, use C++20 `std::span<char>`. Otherwise, use `gsl::span<char>`.
 
 ### <a name="Faq-gsl-owner"></a>FAQ.56: Is `owner` the same as the proposed `observer_ptr`?
 
@@ -22232,7 +22160,7 @@ Better:
 A checker must consider all "naked pointers" suspicious.
 A checker probably must rely on a human-provided list of resources.
 For starters, we know about the standard-library containers, `string`, and smart pointers.
-The use of `span` and `string_span` should help a lot (they are not resource handles).
+The use of `span` and `string_view` should help a lot (they are not resource handles).
 
 ### <a name="Cr-raw"></a>Discussion: A "raw" pointer or reference is never a resource handle
 
